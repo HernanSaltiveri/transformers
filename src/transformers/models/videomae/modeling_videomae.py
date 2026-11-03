@@ -28,21 +28,22 @@ from ...modeling_layers import GradientCheckpointingLayer
 from ...modeling_outputs import BaseModelOutput, ImageClassifierOutput
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
-from ...utils import ModelOutput, TransformersKwargs, auto_docstring, logging
+from ...utils import ModelOutput, TransformersKwargs, auto_docstring, logging, torch_compilable_check
 from ...utils.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-from ...utils.generic import can_return_tuple, check_model_inputs
+from ...utils.generic import can_return_tuple, merge_with_config_defaults
+from ...utils.output_capturing import capture_outputs
 from .configuration_videomae import VideoMAEConfig
 
 
 logger = logging.get_logger(__name__)
 
 
-@dataclass
 @auto_docstring(
     custom_intro="""
     Class for VideoMAEDecoder's outputs, with potential hidden states and attentions.
     """
 )
+@dataclass
 class VideoMAEDecoderOutput(ModelOutput):
     r"""
     logits (`torch.FloatTensor` of shape `(batch_size, patch_size ** 2 * num_channels)`):
@@ -54,12 +55,12 @@ class VideoMAEDecoderOutput(ModelOutput):
     attentions: tuple[torch.FloatTensor] | None = None
 
 
-@dataclass
 @auto_docstring(
     custom_intro="""
     Class for VideoMAEForPreTraining's outputs, with potential hidden states and attentions.
     """
 )
+@dataclass
 class VideoMAEForPreTrainingOutput(ModelOutput):
     r"""
     loss (`torch.FloatTensor` of shape `(1,)`):
@@ -194,7 +195,6 @@ def eager_attention_forward(
     attn_weights = torch.matmul(query, key.transpose(2, 3)) * scaling
 
     if attention_mask is not None:
-        attention_mask = attention_mask[:, :, :, : key.shape[-2]]
         attn_weights = attn_weights + attention_mask
 
     attn_weights = nn.functional.softmax(attn_weights, dim=-1)
@@ -222,38 +222,29 @@ class VideoMAESelfAttention(nn.Module):
         self.scaling = self.attention_head_size**-0.5
         self.is_causal = False
 
-        self.query = nn.Linear(config.hidden_size, self.all_head_size, bias=False)
+        self.query = nn.Linear(config.hidden_size, self.all_head_size, bias=config.qv_bias)
         self.key = nn.Linear(config.hidden_size, self.all_head_size, bias=False)
-        self.value = nn.Linear(config.hidden_size, self.all_head_size, bias=False)
+        self.value = nn.Linear(config.hidden_size, self.all_head_size, bias=config.qv_bias)
 
-        if config.qkv_bias:
-            self.q_bias = nn.Parameter(torch.zeros(self.all_head_size))
-            self.v_bias = nn.Parameter(torch.zeros(self.all_head_size))
-        else:
-            self.q_bias = None
-            self.v_bias = None
+    def forward(
+        self, hidden_states: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:  # TODO: siglip attention 1-1
+        input_shape = hidden_states.shape[:-1]
 
-    def forward(self, hidden_states: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-        batch_size, seq_length, _ = hidden_states.shape
+        hidden_shape = (*input_shape, -1, self.attention_head_size)
+        keys = self.key(hidden_states).view(hidden_shape).transpose(1, 2)
+        values = self.value(hidden_states).view(hidden_shape).transpose(1, 2)
+        queries = self.query(hidden_states).view(hidden_shape).transpose(1, 2)
 
-        k_bias = torch.zeros_like(self.v_bias, requires_grad=False) if self.q_bias is not None else None
-        keys = nn.functional.linear(input=hidden_states, weight=self.key.weight, bias=k_bias)
-        values = nn.functional.linear(input=hidden_states, weight=self.value.weight, bias=self.v_bias)
-        queries = nn.functional.linear(input=hidden_states, weight=self.query.weight, bias=self.q_bias)
-
-        key_layer = keys.view(batch_size, -1, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
-        value_layer = values.view(batch_size, -1, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
-        query_layer = queries.view(batch_size, -1, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
-
-        attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+        attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
+            self.config._attn_implementation, eager_attention_forward
+        )
 
         context_layer, attention_probs = attention_interface(
             self,
-            query_layer,
-            key_layer,
-            value_layer,
+            queries,
+            keys,
+            values,
             None,
             is_causal=self.is_causal,
             scaling=self.scaling,
@@ -266,7 +257,7 @@ class VideoMAESelfAttention(nn.Module):
         return context_layer, attention_probs
 
 
-# Copied from transformers.models.vit.modeling_vit.ViTSelfOutput with ViT->VideoMAE
+# Todo - Refactor as part of vision refactor. Copied from transformers.models.vit.modeling_vit.ViTAttention with ViT->VideoMAE
 class VideoMAESelfOutput(nn.Module):
     """
     The residual connection is defined in VideoMAELayer instead of here (as is the case with other models), due to the
@@ -284,20 +275,24 @@ class VideoMAESelfOutput(nn.Module):
         return hidden_states
 
 
-# Copied from transformers.models.vit.modeling_vit.ViTAttention with ViT->VideoMAE
+# Todo - Refactor as part of vision refactor. Copied from transformers.models.vit.modeling_vit.ViTAttention with ViT->VideoMAE
 class VideoMAEAttention(nn.Module):
     def __init__(self, config: VideoMAEConfig):
         super().__init__()
         self.attention = VideoMAESelfAttention(config)
         self.output = VideoMAESelfOutput(config)
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        self_attn_output, _ = self.attention(hidden_states)
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> torch.Tensor:
+        self_attn_output, _ = self.attention(hidden_states, **kwargs)
         output = self.output(self_attn_output, hidden_states)
         return output
 
 
-# Copied from transformers.models.vit.modeling_vit.ViTIntermediate ViT->VideoMAE
+# Todo - Refactor as part of vision refactor. Copied from transformers.models.vit.modeling_vit.ViTMLP ViT->VideoMAE
 class VideoMAEIntermediate(nn.Module):
     def __init__(self, config: VideoMAEConfig):
         super().__init__()
@@ -313,7 +308,7 @@ class VideoMAEIntermediate(nn.Module):
         return hidden_states
 
 
-# Copied from transformers.models.vit.modeling_vit.ViTOutput ViT->VideoMAE
+# Todo - Refactor as part of vision refactor. Copied from transformers.models.vit.modeling_vit.ViTMLP ViT->VideoMAE
 class VideoMAEOutput(nn.Module):
     def __init__(self, config: VideoMAEConfig):
         super().__init__()
@@ -327,7 +322,7 @@ class VideoMAEOutput(nn.Module):
         return hidden_states
 
 
-# Copied from transformers.models.vit.modeling_vit.ViTLayer with ViT->VideoMAE,VIT->VIDEOMAE
+# Todo - Refactor as part of vision refactor. Copied from transformers.models.vit.modeling_vit.ViTLayer with ViT->VideoMAE,VIT->VIDEOMAE
 class VideoMAELayer(GradientCheckpointingLayer):
     """This corresponds to the Block class in the timm implementation."""
 
@@ -341,9 +336,13 @@ class VideoMAELayer(GradientCheckpointingLayer):
         self.layernorm_before = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.layernorm_after = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> torch.Tensor:
         hidden_states_norm = self.layernorm_before(hidden_states)
-        attention_output = self.attention(hidden_states_norm)
+        attention_output = self.attention(hidden_states_norm, **kwargs)
 
         # first residual connection
         hidden_states = attention_output + hidden_states
@@ -358,7 +357,7 @@ class VideoMAELayer(GradientCheckpointingLayer):
         return layer_output
 
 
-# Copied from transformers.models.vit.modeling_vit.ViTEncoder with ViT->VideoMAE
+# Todo - Refactor as part of vision refactor. Copied from transformers.models.vit.modeling_vit.ViTEncoder with ViT->VideoMAE
 class VideoMAEEncoder(nn.Module):
     def __init__(self, config: VideoMAEConfig):
         super().__init__()
@@ -366,9 +365,13 @@ class VideoMAEEncoder(nn.Module):
         self.layer = nn.ModuleList([VideoMAELayer(config) for _ in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
 
-    def forward(self, hidden_states: torch.Tensor) -> BaseModelOutput:
-        for i, layer_module in enumerate(self.layer):
-            hidden_states = layer_module(hidden_states)
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> BaseModelOutput:
+        for layer_module in self.layer:
+            hidden_states = layer_module(hidden_states, **kwargs)
 
         return BaseModelOutput(last_hidden_state=hidden_states)
 
@@ -393,7 +396,7 @@ class VideoMAEPreTrainedModel(PreTrainedModel):
 
 @auto_docstring
 class VideoMAEModel(VideoMAEPreTrainedModel):
-    def __init__(self, config):
+    def __init__(self, config: VideoMAEConfig):
         super().__init__(config)
         self.config = config
 
@@ -411,7 +414,8 @@ class VideoMAEModel(VideoMAEPreTrainedModel):
     def get_input_embeddings(self):
         return self.embeddings.patch_embeddings
 
-    @check_model_inputs(tie_last_hidden_states=False)
+    @merge_with_config_defaults
+    @capture_outputs(tie_last_hidden_states=False)
     @auto_docstring
     def forward(
         self,
@@ -505,7 +509,7 @@ class VideoMAEDecoder(nn.Module):
     """
 )
 class VideoMAEForPreTraining(VideoMAEPreTrainedModel):
-    def __init__(self, config):
+    def __init__(self, config: VideoMAEConfig):
         super().__init__(config)
         self.config = config
 
@@ -657,6 +661,10 @@ class VideoMAEForPreTraining(VideoMAEPreTrainedModel):
             labels = videos_patch[bool_masked_pos].reshape(batch_size, -1, num_channels)
 
         loss_fct = MSELoss()
+        torch_compilable_check(
+            logits.shape[1] == labels.shape[1],
+            "VideoMAE reconstruction logits and labels must cover the same number of masked patches.",
+        )
         loss = loss_fct(logits, labels)
 
         return VideoMAEForPreTrainingOutput(
@@ -674,7 +682,7 @@ class VideoMAEForPreTraining(VideoMAEPreTrainedModel):
     """
 )
 class VideoMAEForVideoClassification(VideoMAEPreTrainedModel):
-    def __init__(self, config):
+    def __init__(self, config: VideoMAEConfig):
         super().__init__(config)
 
         self.num_labels = config.num_labels
@@ -696,11 +704,6 @@ class VideoMAEForVideoClassification(VideoMAEPreTrainedModel):
         **kwargs: Unpack[TransformersKwargs],
     ) -> ImageClassifierOutput:
         r"""
-        labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
-            Labels for computing the image classification/regression loss. Indices should be in `[0, ...,
-            config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
-            `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
-
         Examples:
 
         ```python

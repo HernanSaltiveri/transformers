@@ -273,7 +273,6 @@ class GPTNeoXModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMi
     pipeline_model_mapping = (
         {
             "feature-extraction": GPTNeoXModel,
-            "question-answering": GPTNeoXForQuestionAnswering,
             "text-classification": GPTNeoXForSequenceClassification,
             "text-generation": GPTNeoXForCausalLM,
             "token-classification": GPTNeoXForTokenClassification,
@@ -345,9 +344,9 @@ class GPTNeoXLanguageGenerationTest(unittest.TestCase):
             model = GPTNeoXForCausalLM.from_pretrained("EleutherAI/pythia-410m-deduped")
 
             if checkpointing:
-                model.gradient_checkpointing_enable()
+                model.activation_checkpointing_enable()
             else:
-                model.gradient_checkpointing_disable()
+                model.activation_checkpointing_disable()
             model.to(torch_device)
 
             inputs = tokenizer("My favorite food is", return_tensors="pt").to(torch_device)
@@ -370,9 +369,9 @@ class GPTNeoXLanguageGenerationTest(unittest.TestCase):
             self.assertTrue(model.config._attn_implementation == "flex_attention")
 
             if checkpointing:
-                model.gradient_checkpointing_enable()
+                model.activation_checkpointing_enable()
             else:
-                model.gradient_checkpointing_disable()
+                model.activation_checkpointing_disable()
             model.to(torch_device)
 
             inputs = tokenizer("My favorite food is", return_tensors="pt").to(torch_device)

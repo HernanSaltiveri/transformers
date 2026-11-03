@@ -273,19 +273,14 @@ class RegNetPreTrainedModel(PreTrainedModel):
                 fan_in, _ = torch.nn.init._calculate_fan_in_and_fan_out(module.weight)
                 bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
                 init.uniform_(module.bias, -bound, bound)
-        elif isinstance(module, (nn.BatchNorm2d, nn.GroupNorm)):
-            init.constant_(module.weight, 1)
-            init.constant_(module.bias, 0)
-            if getattr(module, "running_mean", None) is not None:
-                init.zeros_(module.running_mean)
-                init.ones_(module.running_var)
-                init.zeros_(module.num_batches_tracked)
+        else:
+            super()._init_weights(module)
 
 
 @auto_docstring
 # Copied from transformers.models.resnet.modeling_resnet.ResNetModel with RESNET->REGNET,ResNet->RegNet
 class RegNetModel(RegNetPreTrainedModel):
-    def __init__(self, config):
+    def __init__(self, config: RegNetConfig):
         super().__init__(config)
         self.config = config
         self.embedder = RegNetEmbeddings(config)
@@ -305,7 +300,7 @@ class RegNetModel(RegNetPreTrainedModel):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self.config.return_dict
 
         embedding_output = self.embedder(pixel_values)
 
@@ -335,7 +330,7 @@ class RegNetModel(RegNetPreTrainedModel):
 )
 # Copied from transformers.models.resnet.modeling_resnet.ResNetForImageClassification with RESNET->REGNET,ResNet->RegNet,resnet->regnet
 class RegNetForImageClassification(RegNetPreTrainedModel):
-    def __init__(self, config):
+    def __init__(self, config: RegNetConfig):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.regnet = RegNetModel(config)
@@ -361,7 +356,7 @@ class RegNetForImageClassification(RegNetPreTrainedModel):
             Labels for computing the image classification/regression loss. Indices should be in `[0, ...,
             config.num_labels - 1]`. If `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = return_dict if return_dict is not None else self.config.return_dict
 
         outputs = self.regnet(pixel_values, output_hidden_states=output_hidden_states, return_dict=return_dict)
 

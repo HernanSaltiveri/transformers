@@ -17,7 +17,7 @@ import os
 import re
 from collections import Counter
 
-import httpx
+import requests
 
 
 if __name__ == "__main__":
@@ -25,7 +25,7 @@ if __name__ == "__main__":
     parser.add_argument("--workflow_id", type=str, required=True)
     args = parser.parse_args()
 
-    r = httpx.get(
+    r = requests.get(
         f"https://circleci.com/api/v2/workflow/{args.workflow_id}/job",
         headers={"Circle-Token": os.environ.get("CIRCLE_TOKEN", "")},
     )
@@ -38,7 +38,7 @@ if __name__ == "__main__":
     for job in jobs:
         if job["name"].startswith(("tests_", "examples_", "pipelines_")):
             url = f"https://circleci.com/api/v2/project/{job['project_slug']}/{job['job_number']}/artifacts"
-            r = httpx.get(url, headers={"Circle-Token": os.environ.get("CIRCLE_TOKEN", "")})
+            r = requests.get(url, headers={"Circle-Token": os.environ.get("CIRCLE_TOKEN", "")})
             job_artifacts = r.json()["items"]
 
             os.makedirs(f"outputs/{job['name']}", exist_ok=True)
@@ -49,10 +49,10 @@ if __name__ == "__main__":
             for artifact in job_artifacts:
                 url = artifact["url"]
                 if artifact["path"].endswith("/summary_short.txt"):
-                    r = httpx.get(url, headers={"Circle-Token": os.environ.get("CIRCLE_TOKEN", "")})
+                    r = requests.get(url, headers={"Circle-Token": os.environ.get("CIRCLE_TOKEN", "")})
                     job_test_summaries[artifact["node_index"]] = r.text
                 elif artifact["path"].endswith("/failures_line.txt"):
-                    r = httpx.get(url, headers={"Circle-Token": os.environ.get("CIRCLE_TOKEN", "")})
+                    r = requests.get(url, headers={"Circle-Token": os.environ.get("CIRCLE_TOKEN", "")})
                     job_failure_lines[artifact["node_index"]] = r.text
 
             summary = {}
@@ -66,7 +66,7 @@ if __name__ == "__main__":
             summary = dict(sorted(summary.items(), key=lambda x: (x[1], x[0])))
             workflow_summary[job["name"]] = summary
 
-            with open(f"outputs/{job['name']}/test_summary.json", "w") as fp:
+            with open(f"outputs/{job['name']}/test_summary.json", "w", encoding="utf-8") as fp:
                 json.dump(summary, fp, indent=4)
 
             # Collect failure details
@@ -109,7 +109,7 @@ if __name__ == "__main__":
         test: dict(sorted(result.items())) for test, result in sorted(new_workflow_summary.items())
     }
 
-    with open("outputs/test_summary.json", "w") as fp:
+    with open("outputs/test_summary.json", "w", encoding="utf-8") as fp:
         json.dump(new_workflow_summary, fp, indent=4)
 
     # Aggregate failures by test and model
@@ -142,5 +142,5 @@ if __name__ == "__main__":
         info["errors"] = dict(info["errors"].most_common())
         info["tests"] = sorted(info["tests"])
 
-    with open("outputs/failure_summary.json", "w") as fp:
+    with open("outputs/failure_summary.json", "w", encoding="utf-8") as fp:
         json.dump({"failures": failure_entries, "by_test": by_test, "by_model": by_model}, fp, indent=4)

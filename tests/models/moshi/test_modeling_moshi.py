@@ -42,6 +42,7 @@ from transformers.testing_utils import (
 
 from ...generation.test_utils import GenerationTesterMixin
 from ...test_configuration_common import ConfigTester
+from ...test_memory_cleanup_mixin import MemoryCleanupMixin
 from ...test_modeling_common import (
     TEST_EAGER_MATCHES_SDPA_INFERENCE_PARAMETERIZATION,
     ModelTesterMixin,
@@ -533,6 +534,10 @@ class MoshiTest(ModelTesterMixin, GenerationTesterMixin, unittest.TestCase):
     all_model_classes = (MoshiForConditionalGeneration,) if is_torch_available() else ()
     # training is not supported yet for Moshi
     test_resize_embeddings = False
+    # ``MoshiForConditionalGeneration.forward`` requires audio codes alongside ``input_ids``;
+    # ``test_flex_attention_with_grads`` (and any other test that builds inputs via
+    # ``main_input_name`` + ``additional_model_inputs``) needs these to be listed here.
+    additional_model_inputs = ["moshi_audio_codes", "user_audio_codes", "attention_mask"]
 
     def setUp(self):
         self.model_tester = MoshiTester(self)
@@ -666,20 +671,9 @@ class MoshiTest(ModelTesterMixin, GenerationTesterMixin, unittest.TestCase):
                 ).to(torch_device)
 
                 self.assertTrue(model_eager.config._attn_implementation == "eager")
-
-                for name, submodule in model_eager.named_modules():
-                    class_name = submodule.__class__.__name__
-                    if "SdpaAttention" in class_name or "SdpaSelfAttention" in class_name:
-                        raise ValueError("The eager model should not have SDPA attention layers")
-
-                has_sdpa = False
-                for name, submodule in model_sdpa.named_modules():
-                    class_name = submodule.__class__.__name__
-                    if "SdpaAttention" in class_name or "SdpaSelfAttention" in class_name:
-                        has_sdpa = True
-                        break
-                if not has_sdpa:
-                    raise ValueError("The SDPA model should have SDPA attention layers")
+                # Moshi now uses ``ALL_ATTENTION_FUNCTIONS`` dispatch — a single ``MoshiAttention`` class
+                # handles every backend, so we check ``config._attn_implementation`` instead of class names.
+                self.assertTrue(model_sdpa.config._attn_implementation == "sdpa")
 
                 # Just test that a large cache works as expected
                 res_eager = model_eager.generate(
@@ -835,14 +829,14 @@ def place_dict_on_device(dict_to_place, device):
 
 
 @require_torch
-class MoshiIntegrationTests(unittest.TestCase):
+class MoshiIntegrationTests(MemoryCleanupMixin, unittest.TestCase):
     @cached_property
     def feature_extractor(self):
-        return AutoFeatureExtractor.from_pretrained("kmhf/hf-moshiko")
+        return AutoFeatureExtractor.from_pretrained("kmhf/hf-moshika")
 
     @cached_property
     def tokenizer(self):
-        return AutoTokenizer.from_pretrained("kmhf/hf-moshiko")
+        return AutoTokenizer.from_pretrained("kmhf/hf-moshika")
 
     def _load_datasample(self):
         ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
@@ -896,6 +890,7 @@ class MoshiIntegrationTests(unittest.TestCase):
         self.assertTrue(expected_text_token == model_outputs.sequences[0, -2].item())
         self.assertTrue(expected_audio_tokens == model_outputs.audio_codes[0, :, -1].tolist())
 
+    @unittest.skip(reason="`kmhf/hf-moshiko` is no longer on the Hub, see #50016")
     @slow
     def test_moshiko_greedy_unconditional_fp16_eager(self):
         model = MoshiForConditionalGeneration.from_pretrained(
@@ -910,6 +905,7 @@ class MoshiIntegrationTests(unittest.TestCase):
         # eager equivalence is not as strict as sdpa.
         self.assertTrue(some_expected_audio_tokens == model_outputs.audio_codes[0, :, :2].tolist())
 
+    @unittest.skip(reason="`kmhf/hf-moshiko` is no longer on the Hub, see #50016")
     @slow
     def test_moshiko_greedy_unconditional_fp32(self):
         model = MoshiForConditionalGeneration.from_pretrained(
@@ -931,6 +927,7 @@ class MoshiIntegrationTests(unittest.TestCase):
         self.assertTrue(expected_text_tokens == model_outputs.sequences[0, 1:].tolist())
         self.assertTrue(some_expected_audio_tokens == model_outputs.audio_codes[0, :, :2].tolist())
 
+    @unittest.skip(reason="`kmhf/hf-moshiko` is no longer on the Hub, see #50016")
     @slow
     @require_torch_fp16
     def test_moshiko_greedy_unconditional_fp16(self):

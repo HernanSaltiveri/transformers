@@ -148,7 +148,7 @@ class EdgeTamModelTester:
         fpn_hidden_size=32,
         memory_encoder_hidden_size=32,
         batch_size=2,
-        is_training=False,
+        is_training=True,
     ):
         self.parent = parent
         self.image_size = image_size
@@ -247,6 +247,10 @@ class EdgeTamModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase)
 
     def test_config(self):
         self.config_tester.run_common_tests()
+
+    @unittest.skip(reason="The model has TimmWrapper backbone but doesn't apply any conversion")
+    def test_reverse_loading_mapping(self, check_keys_were_modified=True):
+        pass
 
     @unittest.skip(reason="Timm model does not use inputs_embeds")
     def test_inputs_embeds(self):
@@ -356,6 +360,10 @@ class EdgeTamModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase)
     def test_generate_compilation_all_outputs(self):
         pass
 
+    @unittest.skip("Cannot set `output_attentions` for timm models.")
+    def test_capture_outputs_decorator(self):
+        pass
+
     @slow
     def test_model_from_pretrained(self):
         model_name = "yonigozlan/EdgeTAM-hf"
@@ -440,7 +448,7 @@ def prepare_groceries_image():
 
 
 def prepare_dog_img():
-    img_url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/transformers/model_doc/dog-sam.png"
+    img_url = "https://huggingface.co/datasets/hf-internal-testing/transformers-synthetic-assets/resolve/main/images/dog_sam.png"
     raw_image = Image.open(requests.get(img_url, stream=True).raw).convert("RGB")
     return raw_image
 
@@ -553,11 +561,11 @@ class EdgeTamModelIntegrationTest(unittest.TestCase):
         )
 
         torch.testing.assert_close(
-            scores2, torch.tensor([0.7225, 0.6515, 0.6350]).to(torch_device), atol=1e-4, rtol=1e-4
+            scores2, torch.tensor([9.7692e-01, 4.2534e-01, 8.4256e-04]).to(torch_device), atol=1e-4, rtol=1e-4
         )
         torch.testing.assert_close(
             masks_logits2,
-            torch.tensor([[-8.8259, -7.7961, -9.3665], [-8.2648, -8.7771, -9.1390], [-9.5951, -8.3995, -9.0599]]).to(
+            torch.tensor([[-1.3391, -0.6938, -0.9438], [-0.4971, 1.0835, 0.2109], [0.1637, 1.3306, 1.7760]]).to(
                 torch_device
             ),
             atol=1e-4,

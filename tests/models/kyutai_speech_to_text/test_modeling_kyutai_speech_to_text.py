@@ -37,7 +37,7 @@ from transformers.testing_utils import (
 )
 from transformers.utils.generic import is_flash_attention_requested
 
-from ...generation.test_utils import GenerationTesterMixin, has_similar_generate_outputs
+from ...generation.test_utils import GenerationTesterMixin, assert_similar_generate_outputs
 from ...test_configuration_common import ConfigTester
 from ...test_modeling_common import (
     TEST_EAGER_MATCHES_SDPA_INFERENCE_PARAMETERIZATION,
@@ -261,7 +261,7 @@ class KyutaiSpeechToTextModelTest(ModelTesterMixin, GenerationTesterMixin, Pipel
 
     def setUp(self):
         self.model_tester = KyutaiSpeechToTextModelTester(self)
-        self.config_tester = ConfigTester(self, config_class=KyutaiSpeechToTextConfig, hidden_size=37)
+        self.config_tester = ConfigTester(self, config_class=KyutaiSpeechToTextConfig, hidden_size=64)
 
     def test_config(self):
         self.config_tester.run_common_tests()
@@ -277,19 +277,13 @@ class KyutaiSpeechToTextModelTest(ModelTesterMixin, GenerationTesterMixin, Pipel
 
     def prepare_config_and_inputs_for_generate(self, batch_size=2):
         # monkey patch prepare_config_and_inputs_for_common
-
         prepare_config_and_inputs_for_common = self.model_tester.prepare_config_and_inputs_for_common
-        original_batch_size = self.model_tester.batch_size
-
         self.model_tester.prepare_config_and_inputs_for_common = (
             self.model_tester.prepare_config_and_inputs_for_common_generate
         )
-        self.model_tester.batch_size = batch_size
 
-        config, filtered_inputs_dict = super().prepare_config_and_inputs_for_generate()
+        config, filtered_inputs_dict = super().prepare_config_and_inputs_for_generate(batch_size=batch_size)
         self.model_tester.prepare_config_and_inputs_for_common = prepare_config_and_inputs_for_common
-
-        self.model_tester.batch_size = original_batch_size
         return config, filtered_inputs_dict
 
     @pytest.mark.skip(reason="Moshi ASR has custom embedding approach (text and audio embeddings).")
@@ -424,7 +418,7 @@ class KyutaiSpeechToTextModelTest(ModelTesterMixin, GenerationTesterMixin, Pipel
             outputs_cached.scores = full_cached_scores
 
             # The two sets of generated text and past kv should be equal to each other
-            self.assertTrue(has_similar_generate_outputs(outputs, outputs_cached))
+            assert_similar_generate_outputs(outputs, outputs_cached)
             self._check_caches_are_equal(outputs.past_key_values, outputs_cached.past_key_values)
 
     # skipping for anything FA related that is not FA2 (no attn interface implemented)
@@ -521,7 +515,12 @@ class KyutaiSpeechToTextModelTest(ModelTesterMixin, GenerationTesterMixin, Pipel
                 del model_attn
                 gc.collect()
 
-                self.assertTrue(has_similar_generate_outputs(res_eager, res_attn, atol=1e-3, rtol=1e-3))
+                assert_similar_generate_outputs(res_eager, res_attn, atol=1e-3, rtol=1e-3)
+
+    @parameterized.expand([("linear",), ("dynamic",), ("yarn",)])
+    @unittest.skip("Model expects inputs to be fixed shape and thus we cannot test scaling with long inputs")
+    def test_model_rope_scaling_from_config(self, scaling_type):
+        pass
 
 
 @require_torch
@@ -637,7 +636,7 @@ class KyutaiSpeechToTextForConditionalGenerationIntegrationTests(unittest.TestCa
 
         samples = self._load_datasamples(1)
         inputs = processor(
-            samples,
+            audio=samples,
         ).to(torch_device)
 
         out = model.generate(**inputs)
@@ -667,7 +666,7 @@ class KyutaiSpeechToTextForConditionalGenerationIntegrationTests(unittest.TestCa
 
         samples = self._load_datasamples(4)
         inputs = processor(
-            samples,
+            audio=samples,
         ).to(torch_device)
 
         out = model.generate(**inputs)

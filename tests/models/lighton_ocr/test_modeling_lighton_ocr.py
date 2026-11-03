@@ -169,46 +169,6 @@ class LightOnOcrVisionText2TextModelTester:
         }
         return config, inputs_dict
 
-    def prepare_config_and_inputs_for_generate(self, batch_size=None):
-        """Prepare config and inputs for generation tests."""
-        if batch_size is None:
-            batch_size = self.batch_size
-
-        # Get base config
-        config = self.get_config()
-
-        # Create pixel_values with the specified batch size
-        pixel_values = floats_tensor(
-            [
-                batch_size,
-                self.vision_config["num_channels"],
-                self.vision_config["image_size"],
-                self.vision_config["image_size"],
-            ]
-        )
-
-        # Create input_ids
-        input_ids = ids_tensor([batch_size, self.seq_length], config.text_config.vocab_size - 1) + 1
-
-        # Avoid placing image tokens on positions that would be the pad token
-        input_ids[input_ids == config.image_token_id] = self.pad_token_id
-
-        # Place image tokens at the beginning
-        input_ids[:, : self.num_image_tokens] = config.image_token_id
-
-        attention_mask = input_ids.ne(self.pad_token_id)
-
-        # Create image_sizes as tensor - must match batch size
-        image_sizes = torch.tensor([[self.image_size, self.image_size]] * batch_size, dtype=torch.long)
-
-        inputs_dict = {
-            "pixel_values": pixel_values,
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "image_sizes": image_sizes,
-        }
-        return config, inputs_dict
-
 
 @require_torch
 class LightOnOcrForConditionalGenerationModelTest(ModelTesterMixin, GenerationTesterMixin, unittest.TestCase):
@@ -248,14 +208,9 @@ class LightOnOcrForConditionalGenerationModelTest(ModelTesterMixin, GenerationTe
             batch_size = inputs_dict["pixel_values"].shape[0]
             # If image_sizes doesn't match batch size, adjust it
             if len(inputs_dict["image_sizes"]) != batch_size:
-                # Take only the first batch_size entries
                 inputs_dict["image_sizes"] = inputs_dict["image_sizes"][:batch_size]
 
         return inputs_dict
-
-    def prepare_config_and_inputs_for_generate(self, batch_size=1):
-        """Override to use the model_tester's custom method."""
-        return self.model_tester.prepare_config_and_inputs_for_generate(batch_size=batch_size)
 
     def test_config(self):
         self.config_tester.run_common_tests()
@@ -276,7 +231,7 @@ class LightOnOcrForConditionalGenerationModelTest(ModelTesterMixin, GenerationTe
             # remove one image but leave the image token in text
             curr_input_dict["pixel_values"] = curr_input_dict["pixel_values"][-1:, ...]
             curr_input_dict["image_sizes"] = curr_input_dict["image_sizes"][-1:]
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "Image features and image tokens do not match"):
                 _ = model(**curr_input_dict)
 
             # simulate multi-image case by concatenating inputs where each has exactly one image/image-token
@@ -286,7 +241,7 @@ class LightOnOcrForConditionalGenerationModelTest(ModelTesterMixin, GenerationTe
             input_ids = torch.cat([input_ids, input_ids], dim=0)
 
             # one image and two image tokens raise an error
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "Image features and image tokens do not match"):
                 _ = model(input_ids=input_ids, pixel_values=pixel_values, image_sizes=image_sizes)
 
             # two images and two image tokens don't raise an error
@@ -432,6 +387,10 @@ class LightOnOcrForConditionalGenerationModelTest(ModelTesterMixin, GenerationTe
             # Concatenate features and check shape
             image_features = torch.cat(image_features_list, dim=0)
             self.assertEqual(image_features.shape[-1], config.text_config.hidden_size)
+
+    @unittest.skip("Pixtral backbone already overrides this test, no need to test again.")
+    def test_vision_axial_rope(self):
+        pass
 
 
 @slow

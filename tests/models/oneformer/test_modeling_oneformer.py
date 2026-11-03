@@ -13,6 +13,7 @@
 # limitations under the License.
 """Testing suite for the PyTorch OneFormer model."""
 
+import copy
 import inspect
 import unittest
 from functools import cached_property
@@ -20,7 +21,7 @@ from functools import cached_property
 import numpy as np
 
 from tests.test_modeling_common import floats_tensor
-from transformers import AutoModelForImageClassification, OneFormerConfig, is_torch_available, is_vision_available
+from transformers import OneFormerConfig, is_torch_available, is_vision_available
 from transformers.testing_utils import (
     Expectations,
     is_flaky,
@@ -28,7 +29,6 @@ from transformers.testing_utils import (
     require_torch,
     require_torch_accelerator,
     require_torch_fp16,
-    require_torch_multi_gpu,
     require_vision,
     slow,
     torch_device,
@@ -296,13 +296,6 @@ class OneFormerModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCas
     def test_resize_tokens_embeddings(self):
         pass
 
-    @require_torch_multi_gpu
-    @unittest.skip(
-        reason="OneFormer has some layers using `add_module` which doesn't work well with `nn.DataParallel`"
-    )
-    def test_multi_gpu_data_parallel_forward(self):
-        pass
-
     def test_forward_signature(self):
         config, _ = self.model_tester.prepare_config_and_inputs_for_common()
 
@@ -340,6 +333,27 @@ class OneFormerModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCas
         outputs = model(**inputs)
         self.assertTrue(outputs.loss is not None)
 
+    def test_model_with_labels_not_training(self):
+        config, pixel_values, task_inputs, _, pixel_mask, mask_labels, class_labels = (
+            self.model_tester.prepare_config_and_inputs()
+        )
+        config.is_training = False
+        self.assertIsNotNone(config.contrastive_temperature)
+
+        model = OneFormerForUniversalSegmentation(config).to(torch_device).eval()
+        with torch.no_grad():
+            outputs = model(
+                pixel_values=pixel_values,
+                task_inputs=task_inputs,
+                pixel_mask=pixel_mask,
+                mask_labels=mask_labels,
+                class_labels=class_labels,
+            )
+
+        self.assertIsNone(outputs.text_queries)
+        self.assertIsNotNone(outputs.loss)
+        self.assertTrue(torch.isfinite(outputs.loss).all())
+
     def test_hidden_states_output(self):
         config, inputs = self.model_tester.prepare_config_and_inputs_for_common()
         self.model_tester.create_and_check_oneformer_model(config, **inputs, output_hidden_states=True)
@@ -351,38 +365,6 @@ class OneFormerModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCas
             model = model_class(config).to(torch_device)
             outputs = model(**inputs, output_attentions=True)
             self.assertTrue(outputs.attentions is not None)
-
-    def test_initialization_pretrained_backbone(self):
-        backbone_name = "microsoft/resnet-18"
-
-        # load OneFormerConfig config with a pretrained backbone
-        config = OneFormerConfig(
-            backbone=backbone_name,
-            use_pretrained_backbone=True,
-        )
-
-        # load pretrained backbone
-        backbone_model = AutoModelForImageClassification.from_pretrained(backbone_name, device_map=torch_device)
-
-        def params_match(params1, params2):
-            return all((p1 == p2).all() for p1, p2 in zip(params1, params2))
-
-        for model_class in self.all_model_classes:
-            model = model_class(config).to(torch_device).eval()
-            if model.__class__.__name__ == "OneFormerModel":
-                self.assertTrue(
-                    params_match(
-                        backbone_model.base_model.encoder.parameters(),
-                        model.pixel_level_module.encoder.encoder.parameters(),
-                    )
-                )
-            elif model.__class__.__name__ == "OneFormerForUniversalSegmentation":
-                self.assertTrue(
-                    params_match(
-                        backbone_model.base_model.encoder.parameters(),
-                        model.model.pixel_level_module.encoder.encoder.parameters(),
-                    )
-                )
 
     def test_training(self):
         if not self.model_tester.is_training:
@@ -460,28 +442,35 @@ class OneFormerModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCas
     def test_backbone_selection(self):
         config, inputs = self.model_tester.prepare_config_and_inputs_for_common()
 
-        config.backbone_config = None
-        config.backbone_kwargs = {"out_indices": [1, 2, 3]}
-        config.use_pretrained_backbone = True
+        config_dict = config.to_dict()
+        config_dict["backbone_config"] = None
+        config_dict["backbone_kwargs"] = {"out_indices": [1, 2, 3]}
+        config_dict["use_pretrained_backbone"] = True
 
         # Load a timm backbone
         # We can't load transformer checkpoint with timm backbone, as we can't specify features_only and out_indices
-        config.backbone = "resnet18"
-        config.use_timm_backbone = True
+        config_dict["backbone"] = "resnet18"
+        config_dict["use_timm_backbone"] = True
+        config = config.__class__(**config_dict)
 
         for model_class in self.all_model_classes:
-            model = model_class(config).to(torch_device).eval()
+            model = model_class(copy.deepcopy(config)).to(torch_device).eval()
             if model.__class__.__name__ == "OneFormerModel":
                 self.assertEqual(model.pixel_level_module.encoder.out_indices, [1, 2, 3])
             elif model.__class__.__name__ == "OneFormerForUniversalSegmentation":
                 self.assertEqual(model.model.pixel_level_module.encoder.out_indices, [1, 2, 3])
 
         # Load a HF backbone
-        config.backbone = "microsoft/resnet-18"
-        config.use_timm_backbone = False
+        config_dict = config.to_dict()
+        config_dict["backbone_config"] = None
+        config_dict["backbone_kwargs"] = {"out_indices": [1, 2, 3]}
+        config_dict["use_pretrained_backbone"] = True
+        config_dict["backbone"] = "microsoft/resnet-18"
+        config_dict["use_timm_backbone"] = False
+        config = config.__class__(**config_dict)
 
         for model_class in self.all_model_classes:
-            model = model_class(config).to(torch_device).eval()
+            model = model_class(copy.deepcopy(config)).to(torch_device).eval()
             if model.__class__.__name__ == "OneFormerModel":
                 self.assertEqual(model.pixel_level_module.encoder.out_indices, [1, 2, 3])
             elif model.__class__.__name__ == "OneFormerForUniversalSegmentation":

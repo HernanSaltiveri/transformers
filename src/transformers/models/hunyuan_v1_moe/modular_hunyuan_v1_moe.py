@@ -23,15 +23,15 @@ from ... import initialization as init
 from ...cache_utils import Cache
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from ...processing_utils import Unpack
-from ...utils import TransformersKwargs, is_grouped_mm_available, logging
+from ...utils import TransformersKwargs, logging
+from ...utils.output_capturing import OutputRecorder
+from ..deepseek_v2.modeling_deepseek_v2 import DeepseekV2ForCausalLM, DeepseekV2Model
 from ..hunyuan_v1_dense.modeling_hunyuan_v1_dense import HunYuanDenseV1RotaryEmbedding
 from ..llama.modeling_llama import (
     LlamaAttention,
     LlamaDecoderLayer,
-    LlamaForCausalLM,
     LlamaForSequenceClassification,
     LlamaMLP,
-    LlamaModel,
     LlamaPreTrainedModel,
     LlamaRMSNorm,
     apply_rotary_pos_emb,
@@ -68,7 +68,6 @@ class HunYuanMoEV1Attention(LlamaAttention):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: torch.Tensor | None,
         past_key_values: Cache | None = None,
-        cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor, torch.Tensor]:
         input_shape = hidden_states.shape[:-1]
@@ -84,13 +83,11 @@ class HunYuanMoEV1Attention(LlamaAttention):
         key_states = self.key_layernorm(key_states)
 
         if past_key_values is not None:
-            # sin and cos are specific to RoPE models; cache_position needed for the static cache
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
 
-        attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+        attention_interface: Callable = ALL_ATTENTION_FUNCTIONS.get_interface(
+            self.config._attn_implementation, eager_attention_forward
+        )
 
         attn_output, attn_weights = attention_interface(
             self,
@@ -113,16 +110,19 @@ class HunYuanMoEV1Gate(nn.Module):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
-        num_experts = config.num_experts if isinstance(config.num_experts, int) else config.num_experts[layer_idx]
-        self.wg = nn.Linear(config.hidden_size, num_experts, bias=False, dtype=torch.float32)
+        self.num_experts = config.num_experts if isinstance(config.num_experts, int) else config.num_experts[layer_idx]
+        self.top_k = config.moe_topk if isinstance(config.moe_topk, int) else config.moe_topk[layer_idx]
+        self.wg = nn.Linear(config.hidden_size, self.num_experts, bias=False, dtype=torch.float32)
 
     def forward(self, hidden_states):
-        bsz, seq_len, hidden_size = hidden_states.shape
-        hidden_states = hidden_states.reshape(-1, hidden_size)
+        hidden_states = hidden_states.reshape(-1, hidden_states.shape[-1])
         if self.wg.weight.dtype == torch.float32:
             hidden_states = hidden_states.float()
-        logits = self.wg(hidden_states)
-        return logits
+        router_logits = self.wg(hidden_states)
+        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+        routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+        return router_logits, routing_weights.to(router_logits.dtype), selected_experts
 
 
 class HunYuanMoEV1Experts(MixtralExperts):
@@ -133,30 +133,15 @@ class HunYuanMoEV1Moe(nn.Module):
     def __init__(self, config: HunYuanMoEV1Config, layer_idx: int | None = None):
         super().__init__()
         self.config = config
-        self.layer_idx = layer_idx
-        self.num_experts = config.num_experts if isinstance(config.num_experts, int) else config.num_experts[layer_idx]
-        self.top_k = config.moe_topk if isinstance(config.moe_topk, int) else config.moe_topk[layer_idx]
         self.gate = HunYuanMoEV1Gate(config, layer_idx=layer_idx)
         self.experts = HunYuanMoEV1Experts(config)
         self.shared_mlp = HunYuanMoEV1MLP(config)
 
-    def route_tokens_to_experts(self, hidden_states):
-        routing_weights = F.softmax(hidden_states, dim=1, dtype=torch.float)
-        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
-        routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
-        routing_weights = torch.zeros_like(hidden_states, dtype=torch.float32).scatter_(
-            1, selected_experts, routing_weights
-        )
-        return selected_experts, routing_weights.to(hidden_states.dtype)
-
-        return selected_experts, routing_weights.to(hidden_states.dtype)
-
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states_mlp = self.shared_mlp(hidden_states)
-        router_logits = self.gate(hidden_states)
         hidden_states = hidden_states.view(-1, hidden_dim)
-        selected_experts, routing_weights = self.route_tokens_to_experts(router_logits)
+        _, routing_weights, selected_experts = self.gate(hidden_states)
         final_hidden_states = self.experts(hidden_states, selected_experts, routing_weights).reshape(
             batch_size, sequence_length, hidden_dim
         )
@@ -175,9 +160,11 @@ class HunYuanMoEV1DecoderLayer(LlamaDecoderLayer):
 
 
 class HunYuanMoEV1PreTrainedModel(LlamaPreTrainedModel):
-    _can_compile_fullgraph = (
-        is_grouped_mm_available()
-    )  # https://huggingface.co/docs/transformers/experts_interface#torchcompile
+    _can_record_outputs = {
+        "hidden_states": HunYuanMoEV1DecoderLayer,
+        "attentions": HunYuanMoEV1Attention,
+        "router_logits": OutputRecorder(HunYuanMoEV1Gate, index=0),
+    }
 
     @torch.no_grad()
     def _init_weights(self, module):
@@ -191,11 +178,11 @@ class HunYuanMoEV1RotaryEmbedding(HunYuanDenseV1RotaryEmbedding):
     pass
 
 
-class HunYuanMoEV1Model(LlamaModel):
+class HunYuanMoEV1Model(DeepseekV2Model):
     pass
 
 
-class HunYuanMoEV1ForCausalLM(LlamaForCausalLM):
+class HunYuanMoEV1ForCausalLM(DeepseekV2ForCausalLM):
     pass
 
 

@@ -17,8 +17,10 @@ import copy
 import tempfile
 import unittest
 from functools import cached_property
+from unittest.mock import patch
 
 import pytest
+from parameterized import parameterized
 
 from transformers import SeamlessM4TConfig, is_speech_available, is_torch_available
 from transformers.testing_utils import require_speech, require_torch, slow, torch_device
@@ -26,7 +28,9 @@ from transformers.trainer_utils import set_seed
 
 from ...test_configuration_common import ConfigTester
 from ...test_modeling_common import (
+    TEST_EAGER_MATCHES_SDPA_INFERENCE_PARAMETERIZATION,
     ModelTesterMixin,
+    _test_eager_matches_sdpa_inference,
     floats_tensor,
     ids_tensor,
     random_attention_mask,
@@ -330,6 +334,7 @@ class SeamlessM4TModelTester:
             input_name: input_ids,
             "attention_mask": input_mask,
             "decoder_input_ids": decoder_input_ids,
+            "decoder_attention_mask": input_mask,
             "labels": lm_labels,
         }
         return config, inputs_dict
@@ -364,6 +369,27 @@ class SeamlessM4TModelWithSpeechInputTest(ModelTesterMixin, unittest.TestCase):
     def test_model(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_model(*config_and_inputs)
+
+    @parameterized.expand(TEST_EAGER_MATCHES_SDPA_INFERENCE_PARAMETERIZATION)
+    def test_eager_matches_sdpa_inference(
+        self, name, dtype, padding_side, use_attention_mask, output_attentions, enable_kernels
+    ):
+        # `SeamlessM4TModel` defaults to text and switches its `main_input_name` to `input_features` only at
+        # generation. Pin it to speech so the generic helper feeds the speech encoder for every model class here.
+        with patch.object(SeamlessM4TModel, "main_input_name", "input_features"):
+            _test_eager_matches_sdpa_inference(
+                self, name, dtype, padding_side, use_attention_mask, output_attentions, enable_kernels
+            )
+
+    def test_flex_attention_with_grads(self):
+        with patch.object(SeamlessM4TModel, "main_input_name", "input_features"):
+            super().test_flex_attention_with_grads()
+
+    @unittest.skip(
+        reason="Conformer speech encoder uses relative positional embeddings producing dense attention biases incompatible with flash attention"
+    )
+    def test_sdpa_can_dispatch_on_flash(self):
+        pass
 
     @slow
     def test_model_from_pretrained(self):
@@ -514,11 +540,13 @@ class SeamlessM4TModelWithSpeechInputTest(ModelTesterMixin, unittest.TestCase):
                 [self.model_tester.num_attention_heads, encoder_seq_length, encoder_key_length],
             )
 
-    def test_retain_grad_hidden_states_attentions(self):
-        # When training the model, the first speech encoder layer is sometimes skipped.
-        # Setting the seed to always have the first layer.
-        set_seed(0)
-        super().test_retain_grad_hidden_states_attentions()
+    def _prepare_config_and_inputs_for_retain_grad_hidden_states_attentions(self):
+        # Layerdrop can skip layers and return None attentions. Disable it for this test.
+        config, inputs_dict = super()._prepare_config_and_inputs_for_retain_grad_hidden_states_attentions()
+        config.speech_encoder_layerdrop = 0.0
+        config.encoder_layerdrop = 0.0
+        config.decoder_layerdrop = 0.0
+        return config, inputs_dict
 
 
 @require_torch
@@ -543,10 +571,7 @@ class SeamlessM4TModelWithTextInputTest(ModelTesterMixin, PipelineTesterMixin, u
         {
             "automatic-speech-recognition": SeamlessM4TForSpeechToText,
             "feature-extraction": SeamlessM4TModel,
-            "summarization": SeamlessM4TForTextToText,
             "text-to-audio": SeamlessM4TForTextToSpeech,
-            "text2text-generation": SeamlessM4TForTextToText,
-            "translation": SeamlessM4TForTextToText,
         }
         if is_torch_available()
         else {}
@@ -683,7 +708,7 @@ class SeamlessM4TGenerationTest(unittest.TestCase):
         return config, input_speech, input_text
 
     def factory_generation_speech_test(self, model, inputs):
-        set_seed(0)
+        set_seed(42)
         output = model.generate(**inputs)
         return output
 
@@ -852,7 +877,7 @@ class SeamlessM4TModelIntegrationTest(unittest.TestCase):
 
     @cached_property
     def input_audio(self):
-        set_seed(0)
+        set_seed(42)
         seq_len = 20000
         sampling_rate = 16000
         input_features = torch.rand((2, seq_len))
@@ -865,9 +890,9 @@ class SeamlessM4TModelIntegrationTest(unittest.TestCase):
         model1 = class1.from_pretrained(self.repo_id).to(torch_device)
         model2 = class2.from_pretrained(self.repo_id).to(torch_device)
 
-        set_seed(0)
+        set_seed(42)
         output_1 = model1.generate(**inputs, **class1_kwargs)
-        set_seed(0)
+        set_seed(42)
         output_2 = model2.generate(**inputs, **class2_kwargs)
 
         for key in output_1:
@@ -896,7 +921,7 @@ class SeamlessM4TModelIntegrationTest(unittest.TestCase):
 
         expected_wav_slice = [-3e-05, -0.0004, -0.00037, -0.00013, -6e-05, 0.00012, -0.00016, 0.00025, 7e-05, -3e-05]  # fmt: skip
 
-        set_seed(0)
+        set_seed(42)
         output = model.generate(**self.input_text, num_beams=1, tgt_lang="eng", return_intermediate_token_ids=True)
 
         self.assertListEqual(expected_text_tokens, output.sequences.squeeze().tolist())
@@ -923,7 +948,7 @@ class SeamlessM4TModelIntegrationTest(unittest.TestCase):
 
         expected_wav_slice = [1e-05, -7e-05, -4e-05, -4e-05, -6e-05, -9e-05, -0.0001, -2e-05, -7e-05, -2e-05]  # fmt: skip
 
-        set_seed(0)
+        set_seed(42)
         output = model.generate(**self.input_text, num_beams=1, tgt_lang="swh", return_intermediate_token_ids=True)
 
         self.assertListEqual(expected_text_tokens, output.sequences.squeeze().tolist())
@@ -951,7 +976,7 @@ class SeamlessM4TModelIntegrationTest(unittest.TestCase):
 
         expected_wav_slice = [0.00013, 0.00012, 0.00014, 3e-05, 0.0, -6e-05, -0.00018, -0.00016, -0.00021, -0.00018]  # fmt: skip
 
-        set_seed(0)
+        set_seed(42)
         output = model.generate(**self.input_audio, num_beams=1, tgt_lang="rus", return_intermediate_token_ids=True)
 
         self.assertListEqual(expected_text_tokens, output.sequences.squeeze().tolist())

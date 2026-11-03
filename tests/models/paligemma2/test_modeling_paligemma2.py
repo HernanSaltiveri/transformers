@@ -173,6 +173,7 @@ class PaliGemma2ForConditionalGenerationModelTest(ModelTesterMixin, GenerationTe
     pipeline_model_mapping = {"image-text-to-text": PaliGemmaForConditionalGeneration}
 
     _is_composite = True
+    additional_model_inputs = ["token_type_ids"]
 
     def setUp(self):
         self.model_tester = PaliGemma2VisionText2TextModelTester(self)
@@ -194,7 +195,7 @@ class PaliGemma2ForConditionalGenerationModelTest(ModelTesterMixin, GenerationTe
 
             # remove one image but leave the image token in text
             curr_input_dict["pixel_values"] = curr_input_dict["pixel_values"][-1:, ...]
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "Image features and image tokens do not match"):
                 _ = model(**curr_input_dict)
 
             # simulate multi-image case by concatenating inputs where each has exactly one image/image-token
@@ -203,12 +204,26 @@ class PaliGemma2ForConditionalGenerationModelTest(ModelTesterMixin, GenerationTe
             input_ids = torch.cat([input_ids, input_ids], dim=0)
 
             # one image and two image tokens raise an error
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "Image features and image tokens do not match"):
                 _ = model(input_ids=input_ids, pixel_values=pixel_values)
 
             # two images and two image tokens don't raise an error
             pixel_values = torch.cat([pixel_values, pixel_values], dim=0)
             _ = model(input_ids=input_ids, pixel_values=pixel_values)
+
+    def test_final_logit_softcapping(self):
+        config, input_dict = self.model_tester.prepare_config_and_inputs_for_common()
+        config.text_config.final_logit_softcapping = 0.1
+
+        for model_class in self.all_model_classes:
+            model = model_class(config).to(torch_device)
+            model.eval()
+
+            with torch.no_grad():
+                outputs = model(**input_dict)
+
+            cap = outputs.logits.new_tensor(config.text_config.final_logit_softcapping).item()
+            self.assertLessEqual(outputs.logits.abs().max().item(), cap)
 
     @pytest.mark.xfail(reason="This architecture seems to not compute gradients for some layer.")
     def test_training_gradient_checkpointing(self):

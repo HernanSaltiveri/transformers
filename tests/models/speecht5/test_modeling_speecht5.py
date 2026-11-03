@@ -22,7 +22,7 @@ from functools import cached_property
 from transformers import SpeechT5Config, SpeechT5HifiGanConfig
 from transformers.testing_utils import (
     is_torch_available,
-    require_deterministic_for_xpu,
+    require_deterministic_for_accelerator,
     require_sentencepiece,
     require_tokenizers,
     require_torch,
@@ -164,7 +164,7 @@ class SpeechT5ModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase
 
     def setUp(self):
         self.model_tester = SpeechT5ModelTester(self)
-        self.config_tester = ConfigTester(self, config_class=SpeechT5Config, hidden_size=37)
+        self.config_tester = ConfigTester(self, config_class=SpeechT5Config, hidden_size=32)
 
     def test_config(self):
         self.config_tester.run_common_tests()
@@ -191,11 +191,11 @@ class SpeechT5ModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase
             expected_arg_names.extend(["encoder_outputs"])
             self.assertListEqual(arg_names[: len(expected_arg_names)], expected_arg_names)
 
-    @unittest.skip(reason="Model has no input_embeds")
+    @unittest.skip(reason="Model has no inputs_embeds")
     def test_inputs_embeds(self):
         pass
 
-    @unittest.skip(reason="Model has no input_embeds")
+    @unittest.skip(reason="Model has no inputs_embeds")
     def test_model_get_set_embeddings(self):
         pass
 
@@ -341,7 +341,7 @@ class SpeechT5ForSpeechToTextTest(ModelTesterMixin, unittest.TestCase, Generatio
 
     def setUp(self):
         self.model_tester = SpeechT5ForSpeechToTextTester(self)
-        self.config_tester = ConfigTester(self, config_class=SpeechT5Config, hidden_size=37)
+        self.config_tester = ConfigTester(self, config_class=SpeechT5Config, hidden_size=32)
 
     def test_config(self):
         self.config_tester.run_common_tests()
@@ -540,7 +540,7 @@ class SpeechT5ForSpeechToTextTest(ModelTesterMixin, unittest.TestCase, Generatio
             check_hidden_states_output(inputs_dict, config, model_class)
 
     # this model has no inputs_embeds
-    @unittest.skip(reason="Model has no input_embeds")
+    @unittest.skip(reason="Model has no inputs_embeds")
     def test_inputs_embeds(self):
         pass
 
@@ -824,7 +824,7 @@ class SpeechT5ForTextToSpeechTest(ModelTesterMixin, unittest.TestCase):
 
     def setUp(self):
         self.model_tester = SpeechT5ForTextToSpeechTester(self)
-        self.config_tester = ConfigTester(self, config_class=SpeechT5Config, hidden_size=37)
+        self.config_tester = ConfigTester(self, config_class=SpeechT5Config, hidden_size=32)
 
     def test_config(self):
         self.config_tester.run_common_tests()
@@ -975,7 +975,7 @@ class SpeechT5ForTextToSpeechIntegrationTests(unittest.TestCase):
             "Shape mismatch between generate_speech and generate methods.",
         )
 
-    @require_deterministic_for_xpu
+    @require_deterministic_for_accelerator(devices=["xpu", "rocm"])
     def test_one_to_many_generation(self):
         model = self.default_model
         processor = self.default_processor
@@ -1084,7 +1084,7 @@ class SpeechT5ForTextToSpeechIntegrationTests(unittest.TestCase):
                 "Mismatch in waveform between standalone and integrated vocoder for single instance generation.",
             )
 
-    @require_deterministic_for_xpu
+    @require_deterministic_for_accelerator(devices=["xpu", "rocm"])
     def test_batch_generation(self):
         model = self.default_model
         processor = self.default_processor
@@ -1317,7 +1317,7 @@ class SpeechT5ForSpeechToSpeechTest(ModelTesterMixin, unittest.TestCase):
 
     def setUp(self):
         self.model_tester = SpeechT5ForSpeechToSpeechTester(self)
-        self.config_tester = ConfigTester(self, config_class=SpeechT5Config, hidden_size=37)
+        self.config_tester = ConfigTester(self, config_class=SpeechT5Config, hidden_size=32)
 
     def test_config(self):
         self.config_tester.run_common_tests()
@@ -1536,11 +1536,11 @@ class SpeechT5ForSpeechToSpeechTest(ModelTesterMixin, unittest.TestCase):
 
             check_hidden_states_output(inputs_dict, config, model_class)
 
-    @unittest.skip(reason="Model has no input_embeds")
+    @unittest.skip(reason="Model has no inputs_embeds")
     def test_inputs_embeds(self):
         pass
 
-    @unittest.skip(reason="Model has no input_embeds")
+    @unittest.skip(reason="Model has no inputs_embeds")
     def test_model_get_set_embeddings(self):
         pass
 
@@ -1691,11 +1691,11 @@ class SpeechT5HifiGanTest(ModelTesterMixin, unittest.TestCase):
     def test_hidden_states_output(self):
         pass
 
-    @unittest.skip(reason="Model has no input_embeds")
+    @unittest.skip(reason="Model has no inputs_embeds")
     def test_inputs_embeds(self):
         pass
 
-    @unittest.skip(reason="Model has no input_embeds")
+    @unittest.skip(reason="Model has no inputs_embeds")
     def test_model_get_set_embeddings(self):
         pass
 

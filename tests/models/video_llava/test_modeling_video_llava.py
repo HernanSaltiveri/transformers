@@ -18,7 +18,6 @@ import unittest
 
 import numpy as np
 import pytest
-import requests
 from huggingface_hub import hf_hub_download
 from parameterized import parameterized
 
@@ -42,6 +41,7 @@ from transformers.testing_utils import (
 
 from ...generation.test_utils import GenerationTesterMixin
 from ...test_configuration_common import ConfigTester
+from ...test_image_processing_common import load_test_image
 from ...test_modeling_common import ModelTesterMixin, floats_tensor, ids_tensor
 
 
@@ -49,7 +49,7 @@ if is_torch_available():
     import torch
 
 if is_vision_available():
-    from PIL import Image
+    pass
 
 
 class VideoLlavaVisionText2TextModelTester:
@@ -235,6 +235,23 @@ class VideoLlavaForConditionalGenerationModelTest(ModelTesterMixin, GenerationTe
     def test_flash_attention_2_padding_matches_padding_free_with_position_ids(self):
         pass
 
+    def test_nonlegacy_input_name(self):
+        """
+        Tests that we support legacy `pixel_values_images` and the recommended `pixel_values` as input.
+        """
+        config, input_dict = self.model_tester.prepare_config_and_inputs_for_common()
+        nonlegacy_input_dict = input_dict.copy()
+        nonlegacy_input_dict["pixel_values"] = nonlegacy_input_dict["pixel_values_images"]
+        del nonlegacy_input_dict["pixel_values_images"]
+        for model_class in self.all_model_classes:
+            model = model_class(config).to(torch_device)
+            model.eval()
+            with torch.no_grad():
+                out1 = model(**input_dict)
+                out2 = model(**nonlegacy_input_dict)
+
+            torch.testing.assert_close(out1[0], out2[0])
+
     @run_test_using_subprocess
     def test_mixed_input(self):
         config, inputs = self.model_tester.prepare_config_and_inputs_for_common()
@@ -354,7 +371,7 @@ class VideoLlavaForConditionalGenerationModelTest(ModelTesterMixin, GenerationTe
 
             # remove one image but leave the image token in text
             curr_input_dict["pixel_values_images"] = curr_input_dict["pixel_values_images"][-1:, ...]
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "Image features and image tokens do not match"):
                 _ = model(**curr_input_dict)
 
             # simulate multi-image case by concatenating inputs where each has exactly one image/image-token
@@ -363,7 +380,7 @@ class VideoLlavaForConditionalGenerationModelTest(ModelTesterMixin, GenerationTe
             input_ids = torch.cat([input_ids, input_ids], dim=0)
 
             # one image and two image tokens raise an error
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "Image features and image tokens do not match"):
                 _ = model(input_ids=input_ids, pixel_values_images=pixel_values)
 
             # two images and two image tokens don't raise an error
@@ -448,8 +465,8 @@ class VideoLlavaForConditionalGenerationIntegrationTest(unittest.TestCase):
             repo_id="raushan-testing-hf/videos-test", filename="video_demo.npy", repo_type="dataset"
         )
         video_file = np.load(video_file)
-        url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-        image = Image.open(requests.get(url, stream=True).raw)
+        url = "https://huggingface.co/datasets/hf-internal-testing/fixtures-coco/resolve/main/val2017/000000039769.jpg"
+        image = load_test_image(url)
 
         inputs = self.processor(
             text=prompts, images=[image], videos=[video_file], padding=True, return_tensors="pt"

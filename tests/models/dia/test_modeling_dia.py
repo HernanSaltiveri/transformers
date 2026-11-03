@@ -19,6 +19,7 @@ import tempfile
 import unittest
 
 import pytest
+from parameterized import parameterized
 
 from transformers.models.dia import DiaConfig, DiaDecoderConfig, DiaEncoderConfig
 from transformers.testing_utils import (
@@ -32,7 +33,7 @@ from transformers.testing_utils import (
 from transformers.utils import is_soundfile_available, is_torch_available, is_torchaudio_available
 from transformers.utils.import_utils import is_datasets_available
 
-from ...generation.test_utils import GenerationTesterMixin, has_similar_generate_outputs
+from ...generation.test_utils import GenerationTesterMixin, assert_similar_generate_outputs
 from ...test_configuration_common import ConfigTester
 from ...test_modeling_common import ModelTesterMixin, ids_tensor
 from ...test_pipeline_mixin import PipelineTesterMixin
@@ -133,14 +134,14 @@ class DiaModelTester:
             vocab_size=self.vocab_size,
             hidden_act=self.hidden_act,
             num_channels=self.num_channels,
+            eos_token_id=self.eos_token_id,
+            pad_token_id=self.pad_token_id,
+            bos_token_id=self.bos_token_id,
         )
 
         config = DiaConfig(
             encoder_config=encoder_config,
             decoder_config=decoder_config,
-            eos_token_id=self.eos_token_id,
-            pad_token_id=self.pad_token_id,
-            bos_token_id=self.bos_token_id,
             delay_pattern=self.delay_pattern,
         )
 
@@ -230,6 +231,10 @@ class DiaModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin,
         # Skipping `has_text_modality` but manually testing down below
         self.config_tester = ConfigTester(self, has_text_modality=False, config_class=DiaConfig)
         self.skip_non_greedy_generate()
+
+    @unittest.skip(reason="Dia flattens codebook channels into the batch dim; logits do not match 2D `labels`")
+    def test_encoder_decoder_loss_no_double_shift(self):
+        pass
 
     def prepare_config_and_inputs_for_generate(self, batch_size=2):
         # DIA should not have a `None` eos token id because it uses certain LogitsProcessors
@@ -336,9 +341,7 @@ class DiaModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin,
             else:
                 model_input_length = prompt_length + generated_length
             query_length = (
-                prompt_length + generated_length
-                if not has_static_cache
-                else decoder_past_key_values.get_max_cache_shape()
+                prompt_length + generated_length if not has_static_cache else decoder_past_key_values.get_max_length()
             )
 
             expected_shape = (
@@ -504,7 +507,7 @@ class DiaModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin,
             outputs_cached.scores = full_cached_scores
 
             # The two sets of generated text and past kv should be equal to each other
-            self.assertTrue(has_similar_generate_outputs(outputs, outputs_cached))
+            assert_similar_generate_outputs(outputs, outputs_cached)
             self._check_caches_are_equal(outputs.past_key_values, outputs_cached.past_key_values)
 
     @pytest.mark.generate
@@ -521,8 +524,11 @@ class DiaModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin,
     def test_model_get_set_embeddings(self):
         pass
 
-    @unittest.skip(reason="Encoder-Decoder cache can not be initialized.")
-    def test_multi_gpu_data_parallel_forward(self):
+    @parameterized.expand([("linear",), ("dynamic",), ("yarn",)])
+    @unittest.skip(
+        "Model expects decoder inputs to be of certain shape and thus we cannot test scaling with long inputs"
+    )
+    def test_model_rope_scaling_from_config(self, scaling_type):
         pass
 
 

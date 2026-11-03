@@ -175,6 +175,7 @@ class LayoutLMv2Tokenizer(TokenizersBackend):
         only_label_first_subword=True,
         tokenize_chinese_chars=True,
         strip_accents=None,
+        model_max_length=512,
         **kwargs,
     ):
         self.do_lower_case = do_lower_case
@@ -214,6 +215,7 @@ class LayoutLMv2Tokenizer(TokenizersBackend):
             only_label_first_subword=only_label_first_subword,
             tokenize_chinese_chars=tokenize_chinese_chars,
             strip_accents=strip_accents,
+            model_max_length=model_max_length,
             **kwargs,
         )
 
@@ -221,6 +223,7 @@ class LayoutLMv2Tokenizer(TokenizersBackend):
         self.sep_token_box = sep_token_box
         self.pad_token_box = pad_token_box
         self.pad_token_label = pad_token_label
+        self.only_label_first_subword = only_label_first_subword
 
         # Now set post_processor with actual token IDs
         cls = str(self.cls_token)
@@ -246,7 +249,7 @@ class LayoutLMv2Tokenizer(TokenizersBackend):
         word_labels: list[int] | list[list[int]] | None = None,
         add_special_tokens: bool = True,
         padding: bool | str | PaddingStrategy = False,
-        truncation: bool | str | TruncationStrategy = None,
+        truncation: bool | str | TruncationStrategy | None = None,
         max_length: int | None = None,
         stride: int = 0,
         pad_to_multiple_of: int | None = None,
@@ -398,7 +401,7 @@ class LayoutLMv2Tokenizer(TokenizersBackend):
         word_labels: list[int] | list[list[int]] | None = None,
         add_special_tokens: bool = True,
         padding: bool | str | PaddingStrategy = False,
-        truncation: bool | str | TruncationStrategy = None,
+        truncation: bool | str | TruncationStrategy | None = None,
         max_length: int | None = None,
         stride: int = 0,
         pad_to_multiple_of: int | None = None,
@@ -463,7 +466,7 @@ class LayoutLMv2Tokenizer(TokenizersBackend):
         word_labels: list[int] | None = None,
         add_special_tokens: bool = True,
         padding: bool | str | PaddingStrategy = False,
-        truncation: bool | str | TruncationStrategy = None,
+        truncation: bool | str | TruncationStrategy | None = None,
         max_length: int | None = None,
         stride: int = 0,
         pad_to_multiple_of: int | None = None,

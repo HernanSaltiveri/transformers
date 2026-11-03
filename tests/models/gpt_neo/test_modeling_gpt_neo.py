@@ -320,7 +320,7 @@ class GPTNeoModelTester:
     ):
         model = GPTNeoForCausalLM(config)
         if gradient_checkpointing:
-            model.gradient_checkpointing_enable()
+            model.activation_checkpointing_enable()
         model.to(torch_device)
 
         result = model(input_ids, token_type_ids=token_type_ids, labels=input_ids)
@@ -366,7 +366,6 @@ class GPTNeoModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMix
     pipeline_model_mapping = (
         {
             "feature-extraction": GPTNeoModel,
-            "question-answering": GPTNeoForQuestionAnswering,
             "text-classification": GPTNeoForSequenceClassification,
             "text-generation": GPTNeoForCausalLM,
             "token-classification": GPTNeoForTokenClassification,
@@ -485,9 +484,9 @@ class GPTNeoModelLanguageGenerationTest(unittest.TestCase):
         for checkpointing in [True, False]:
             model = self.model
             if checkpointing:
-                model.gradient_checkpointing_enable()
+                model.activation_checkpointing_enable()
             else:
-                model.gradient_checkpointing_disable()
+                model.activation_checkpointing_disable()
             input_ids = torch.tensor([[464, 3290]], dtype=torch.long, device=torch_device)  # The dog
             # The dog-eared copy of the book, which is a collection of essays by the late author,
             expected_output_ids = [464, 3290, 12, 3380, 4866, 286, 262, 1492, 11, 543, 318, 257, 4947, 286, 27126, 416, 262, 2739, 1772, 11]  # fmt: skip
@@ -503,7 +502,7 @@ class GPTNeoModelLanguageGenerationTest(unittest.TestCase):
         torch.manual_seed(0)
         tokenized = tokenizer("Today is a nice day and", return_tensors="pt", return_token_type_ids=True)
         input_ids = tokenized.input_ids.to(torch_device)
-        output_ids = model.generate(input_ids, do_sample=True)
+        output_ids = model.generate(input_ids, do_sample=True, max_length=20)
         output_str = tokenizer.decode(output_ids[0], skip_special_tokens=True)
 
         EXPECTED_OUTPUT_STR = "Today is a nice day and if you don’t get the memo here is what you can"

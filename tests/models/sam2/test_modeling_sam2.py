@@ -70,7 +70,7 @@ class Sam2VisionModelTester:
         backbone_channel_list=[96, 48, 24, 12],
         backbone_feature_sizes=[[32, 32], [16, 16], [8, 8]],
         fpn_hidden_size=32,
-        is_training=False,
+        is_training=True,
     ):
         self.parent = parent
         self.hidden_size = hidden_size
@@ -194,6 +194,7 @@ class Sam2VisionModelTest(ModelTesterMixin, unittest.TestCase):
             # check that output_attentions also work using config
             del inputs_dict["output_attentions"]
             config.output_attentions = True
+            config.backbone_config.output_attentions = True
             window_size = config.backbone_config.window_size_per_stage[0]
             out_dim = config.backbone_config.hidden_size
             patch_stride = config.backbone_config.patch_stride
@@ -263,6 +264,7 @@ class Sam2VisionModelTest(ModelTesterMixin, unittest.TestCase):
             # check that output_hidden_states also work using config
             del inputs_dict["output_hidden_states"]
             config.output_hidden_states = True
+            config.backbone_config.output_hidden_states = True
 
             check_hidden_states_output(inputs_dict, config, model_class, image_size)
 
@@ -371,7 +373,7 @@ class Sam2ModelTester:
         fpn_hidden_size=32,
         memory_encoder_hidden_size=32,
         batch_size=2,
-        is_training=False,
+        is_training=True,
     ):
         self.parent = parent
         self.image_size = image_size
@@ -514,6 +516,7 @@ class Sam2ModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
             del inputs_dict["output_attentions"]
             config.mask_decoder_config.output_attentions = True
             config.vision_config.output_attentions = True
+            config.vision_config.backbone_config.output_attentions = True
             config.output_attentions = True
             model = model_class._from_config(config, attn_implementation="eager")
             window_size = config.vision_config.backbone_config.window_size_per_stage[0]
@@ -739,7 +742,7 @@ def prepare_groceries_image():
 
 
 def prepare_dog_img():
-    img_url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/transformers/model_doc/dog-sam.png"
+    img_url = "https://huggingface.co/datasets/hf-internal-testing/transformers-synthetic-assets/resolve/main/images/dog_sam.png"
     raw_image = Image.open(requests.get(img_url, stream=True).raw).convert("RGB")
     return raw_image
 
@@ -852,13 +855,13 @@ class Sam2ModelIntegrationTest(unittest.TestCase):
         )
 
         torch.testing.assert_close(
-            scores2, torch.tensor([0.9504, 0.8117, 0.7426]).to(torch_device), atol=1e-4, rtol=1e-4
+            scores2, torch.tensor([0.9469, 0.7221, 0.194]).to(torch_device), atol=1e-4, rtol=1e-4
         )
         torch.testing.assert_close(
             masks_logits2,
-            torch.tensor(
-                [[-13.1182, -17.3217, -14.9651], [-16.2372, -12.7739, -17.6346], [-13.5013, -17.1549, -15.6614]]
-            ).to(torch_device),
+            torch.tensor([[-2.9496, -2.3006, -2.4117], [1.0153, 0.4223, 2.0633], [2.5226, 4.4429, 4.8272]]).to(
+                torch_device
+            ),
             atol=1e-4,
             rtol=1e-4,
         )

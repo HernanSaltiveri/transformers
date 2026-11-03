@@ -18,6 +18,7 @@ from .base import HfQuantizer
 
 if TYPE_CHECKING:
     from ..modeling_utils import PreTrainedModel
+    from ..utils.quantization_config import FbgemmFp8Config
 
 from ..utils import (
     is_accelerate_available,
@@ -43,9 +44,12 @@ class FbgemmFp8HfQuantizer(HfQuantizer):
     """
 
     requires_calibration = False
+    serialized_names = {"weight": ["weight", "weight_scale"]}
+    quantization_config: "FbgemmFp8Config"
 
-    def __init__(self, quantization_config, **kwargs):
-        super().__init__(quantization_config, **kwargs)
+    @property
+    def quantized_element_size(self) -> float:
+        return 1
 
     def validate_environment(self, *args, **kwargs):
         if not is_torch_cuda_available() and not is_torch_xpu_available():
@@ -124,55 +128,21 @@ class FbgemmFp8HfQuantizer(HfQuantizer):
             modules_to_not_convert=self.modules_to_not_convert,
             quantization_config=self.quantization_config,
             pre_quantized=self.pre_quantized,
-            tp_plan=model._tp_plan,
         )
 
-    def update_tp_plan(self, config):
-        if "Llama4" in config.__class__.__name__:
-            text_plan = {
-                # We are using a different tp plan with local_colwise and local_rowwise for the attention because fbgemm operations cannot be parallelized
-                # With local_colwise and local_rowwise, all the operations are done locally, and we add a gather operation to gather the results instead of
-                # using dtensors
-                "layers.*.self_attn.q_proj.weight": "local_colwise",
-                "layers.*.self_attn.q_proj.weight_scale": "local_colwise",
-                "layers.*.self_attn.k_proj.weight": "local_colwise",
-                "layers.*.self_attn.k_proj.weight_scale": "local_colwise",
-                "layers.*.self_attn.v_proj.weight": "local_colwise",
-                "layers.*.self_attn.v_proj.weight_scale": "local_colwise",
-                "layers.*.self_attn.o_proj.weight": "local_rowwise",
-                "layers.*.self_attn": "gather",
-                # We keep the same sequence_parallel plan for layernorms
-                "layers.*.input_layernorm.weight": "sequence_parallel",
-                "layers.*.post_attention_layernorm.weight": "sequence_parallel",
-                "norm.weight": "sequence_parallel",
-                # We keep the same local_colwise and local_rowwise plan for the feed forward shared expert
-                # We also add scales for the shared expert, for local_colwise the scale is also local_colwise
-                # For local_rowwise the scale is replicated, so we don't need to add it
-                "layers.*.feed_forward.shared_expert.gate_proj.weight": "local_colwise",
-                "layers.*.feed_forward.shared_expert.gate_proj.weight_scale": "local_colwise",
-                "layers.*.feed_forward.shared_expert.up_proj.weight": "local_colwise",
-                "layers.*.feed_forward.shared_expert.up_proj.weight_scale": "local_colwise",
-                "layers.*.feed_forward.shared_expert.down_proj.weight": "local_rowwise",
-                "layers.*.feed_forward.experts": "local",
-                "layers.*.feed_forward": "gather",
-                "layers.*.feed_forward.experts.*.gate_proj.weight": "local_colwise",
-                "layers.*.feed_forward.experts.*.gate_proj.weight_scale": "local_colwise",
-                "layers.*.feed_forward.experts.*.up_proj.weight": "local_colwise",
-                "layers.*.feed_forward.experts.*.up_proj.weight_scale": "local_colwise",
-                "layers.*.feed_forward.experts.*.down_proj.weight": "local_rowwise",
-                # For Fused implementation we use local_packed_rowwise for the gate_up_proj, and the same for the packed scales
-                # We use local_colwise for the down_proj, and the scales are replicated so we don't add them
-                "layers.*.feed_forward.experts.gate_up_proj": "local_packed_rowwise",
-                "layers.*.feed_forward.experts.gate_up_proj_scale": "local_packed_rowwise",
-                "layers.*.feed_forward.experts.down_proj": "local_colwise",
-            }
-            if config.get_text_config() is not None:
-                config.get_text_config().base_model_tp_plan = text_plan
-            else:
-                config.base_model_tp_plan = text_plan
-            return config
+    def _process_model_after_weight_loading(self, model, **kwargs):
+        """
+        Force update the input scale upper bound after weight loading and device dispatch are complete.
+        This resolves issues where persistent buffers are zeroed out or overwritten during the loading process.
+        """
+        from ..integrations.fbgemm_fp8 import FbgemmFp8Linear, FbgemmFp8Llama4TextExperts
 
-        return config
+        for m in model.modules():
+            if isinstance(m, (FbgemmFp8Linear, FbgemmFp8Llama4TextExperts)):
+                if hasattr(m, "input_scale_ub"):
+                    # The model is now on the target device, so we can use fill_ directly.
+                    m.input_scale_ub.fill_(self.quantization_config.activation_scale_ub)
+        return model
 
     def is_serializable(self):
         return True

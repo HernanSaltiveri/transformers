@@ -18,8 +18,8 @@ URL: https://github.com/om-ai-lab/OmDet"""
 import argparse
 from io import BytesIO
 
-import httpx
 import torch
+from huggingface_hub.utils import httpx
 from PIL import Image
 
 from transformers import (
@@ -241,7 +241,7 @@ def run_test(model, processor):
         image = Image.open(BytesIO(response.read())).convert("RGB")
 
     classes = ["cat", "remote"]
-    task = "Detect {}.".format(", ".join(classes))
+    task = f"Detect {', '.join(classes)}."
     inputs = processor(image, text=classes, task=task, return_tensors="pt")
 
     # Running forward

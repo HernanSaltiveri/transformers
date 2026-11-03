@@ -22,7 +22,7 @@ from collections import UserDict
 from typing import TYPE_CHECKING, Any, TypeVar, Union
 
 import numpy as np
-from huggingface_hub import create_repo, is_offline_mode
+from huggingface_hub import is_offline_mode
 
 from .dynamic_module_utils import custom_object_save
 from .utils import (
@@ -40,7 +40,7 @@ from .utils import (
     requires_backends,
     safe_load_json_file,
 )
-from .utils.hub import cached_file
+from .utils.hub import cached_file, hf_api, resolve_revision
 
 
 if TYPE_CHECKING:
@@ -79,7 +79,8 @@ class BatchFeature(UserDict):
         skip_tensor_conversion: list[str] | set[str] | None = None,
     ):
         super().__init__(data)
-        self.convert_to_tensors(tensor_type=tensor_type, skip_tensor_conversion=skip_tensor_conversion)
+        self.skip_tensor_conversion = skip_tensor_conversion
+        self.convert_to_tensors(tensor_type=tensor_type)
 
     def __getitem__(self, item: str) -> Any:
         """
@@ -178,6 +179,9 @@ class BatchFeature(UserDict):
             return self
 
         is_tensor, as_tensor = self._get_is_as_tensor_fns(tensor_type)
+        skip_tensor_conversion = (
+            skip_tensor_conversion if skip_tensor_conversion is not None else self.skip_tensor_conversion
+        )
 
         # Do the tensor conversion in batch
         for key, value in self.items():
@@ -303,7 +307,7 @@ class FeatureExtractionMixin(PushToHubMixin):
                 - a path to a *directory* containing a feature extractor file saved using the
                   [`~feature_extraction_utils.FeatureExtractionMixin.save_pretrained`] method, e.g.,
                   `./my_model_directory/`.
-                - a path or url to a saved feature extractor JSON *file*, e.g.,
+                - a path to a saved feature extractor JSON *file*, e.g.,
                   `./my_model_directory/preprocessor_config.json`.
             cache_dir (`str` or `os.PathLike`, *optional*):
                 Path to a directory in which a downloaded pretrained model feature extractor should be cached if the
@@ -367,7 +371,14 @@ class FeatureExtractionMixin(PushToHubMixin):
         kwargs["cache_dir"] = cache_dir
         kwargs["force_download"] = force_download
         kwargs["local_files_only"] = local_files_only
-        kwargs["revision"] = revision
+        # Resolve the revision once, so that all the files of this load come from the same repository state.
+        kwargs["revision"] = resolve_revision(
+            pretrained_model_name_or_path,
+            revision,
+            token=token,
+            local_files_only=local_files_only,
+            cache_dir=cache_dir,
+        )
 
         if token is not None:
             kwargs["token"] = token
@@ -399,7 +410,7 @@ class FeatureExtractionMixin(PushToHubMixin):
         if push_to_hub:
             commit_message = kwargs.pop("commit_message", None)
             repo_id = kwargs.pop("repo_id", save_directory.split(os.path.sep)[-1])
-            repo_id = create_repo(repo_id, exist_ok=True, **kwargs).repo_id
+            repo_id = hf_api().create_repo(repo_id, exist_ok=True, **kwargs).repo_id
             files_timestamps = self._get_files_timestamps(save_directory)
 
         # If we have a custom config, we copy the file defining it in the folder and set the attributes so it can be
@@ -446,6 +457,15 @@ class FeatureExtractionMixin(PushToHubMixin):
         token = kwargs.pop("token", None)
         local_files_only = kwargs.pop("local_files_only", False)
         revision = kwargs.pop("revision", None)
+
+        # Resolve the revision once, so that all the files below come from the same repository state.
+        revision = resolve_revision(
+            pretrained_model_name_or_path,
+            revision,
+            token=token,
+            local_files_only=local_files_only,
+            cache_dir=cache_dir,
+        )
 
         from_pipeline = kwargs.pop("_from_pipeline", None)
         from_auto_class = kwargs.pop("_from_auto", False)
@@ -511,7 +531,7 @@ class FeatureExtractionMixin(PushToHubMixin):
 
         # Load feature_extractor dict. Priority goes as (nested config if found -> image processor config)
         # We are downloading both configs because almost all models have a `processor_config.json` but
-        # not all of these are nested. We need to check if it was saved recebtly as nested or if it is legacy style
+        # not all of these are nested. We need to check if it was saved recently as nested or if it is legacy style
         feature_extractor_dict = None
         if resolved_processor_file is not None:
             processor_dict = safe_load_json_file(resolved_processor_file)

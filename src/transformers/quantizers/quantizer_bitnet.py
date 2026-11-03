@@ -18,6 +18,7 @@ from .base import HfQuantizer
 
 if TYPE_CHECKING:
     from ..modeling_utils import PreTrainedModel
+    from ..utils.quantization_config import BitNetQuantConfig
 
 from ..utils import is_accelerate_available, is_torch_available, logging
 
@@ -38,9 +39,7 @@ class BitNetHfQuantizer(HfQuantizer):
     """
 
     requires_calibration = True
-
-    def __init__(self, quantization_config, **kwargs):
-        super().__init__(quantization_config, **kwargs)
+    quantization_config: "BitNetQuantConfig"
 
     def validate_environment(self, *args, **kwargs):
         if not is_accelerate_available():
@@ -103,3 +102,13 @@ class BitNetHfQuantizer(HfQuantizer):
             self.quantization_config.linear_class == "autobitlinear"
             and self.quantization_config.quantization_mode == "online"
         )
+
+    serialized_names = {"weight": ["weight"]}
+
+    def get_load_operations(self):
+        from ..integrations.bitnet import BitNetDeserialize
+
+        config = self.quantization_config
+        if config.linear_class == "autobitlinear" and config.quantization_mode == "offline":
+            return {"deserialize": BitNetDeserialize}
+        return {}
